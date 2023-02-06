@@ -1,0 +1,19 @@
+replicaCount: 1
+image:
+  repository: "docker.grubstack.app/production/grubstack-api"
+  tag: "latest"
+  pullPolicy: IfNotPresent
+service:
+  type: LoadBalancer
+  port: 80
+customer:
+  host: api.grubstack.app
+  tenantId: abcdef123456
+database:
+  host: localhost
+  name: grubstack_core
+  port: 5432
+  user: grubstack
+  password: grubstack
+  ssl: prefer
+  corporate: grubstack
