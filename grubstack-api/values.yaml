@@ -2,7 +2,7 @@ replicaCount: 1
 image:
   repository: "docker.grubstack.app/production/grubstack-api"
   tag: "latest"
-  pullPolicy: IfNotPresent
+  pullPolicy: Always
 service:
   type: LoadBalancer
   port: 80
@@ -17,3 +17,6 @@ database:
   password: grubstack
   ssl: prefer
   corporate: grubstack
+auth0:
+  domain: us.auth0.com
+  audience: https://api.grubstack.app/v1

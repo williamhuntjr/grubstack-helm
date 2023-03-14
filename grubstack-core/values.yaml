@@ -1,0 +1,16 @@
+replicaCount: 1
+image:
+  repository: "docker.grubstack.app/production/grubstack-core"
+  tag: "latest"
+  pullPolicy: Always
+service:
+  type: LoadBalancer
+  port: 3000
+customer:
+  host: core.grubstack.app
+  apiUrl: api.grubstack.app
+  corporateUrl: grubstack.app
+  siteUrl: core.grubstack.app
+auth0:
+  domain: auth0.com
+  clientId: abcdefg

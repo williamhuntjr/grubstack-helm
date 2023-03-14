@@ -27,26 +27,20 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: http
-              containerPort: 80
+              containerPort: {{ .Values.service.port }}
               protocol: TCP
           env:
-            - name: TENANT_ID
-              value: "{{ .Values.customer.tenantId }}"
-            - name: DATABASE_HOST
-              value: "{{ .Values.database.host }}"
-            - name: DATABASE_NAME
-              value: "{{ .Values.database.name }}"
-            - name: DATABASE_PORT
-              value: "{{ .Values.database.port }}"
-            - name: DATABASE_USER
-              value: "{{ .Values.database.user }}"
-            - name: DATABASE_PASSWORD
-              value: "{{ .Values.database.password }}"
-            - name: DATABASE_SSL
-              value: "{{ .Values.database.ssl }}"
-            - name: CORPORATE_DB
-              value: "{{ .Values.database.corporate }}"
-            - name: AUTH0_DOMAIN
+            - name: API_URL
+              value: "{{ .Values.customer.apiUrl }}"
+            - name: CORPORATE_URL
+              value: "{{ .Values.customer.corporateUrl }}"
+            - name: SITE_URL
+              value: "{{ .Values.customer.siteUrl }}"
+            - name: AUTH_DOMAIN
               value: "{{ .Values.auth0.domain }}"
-            - name: AUTH0_AUDIENCE
-              value: "{{ .Values.auth0.audience }}"
+            - name: AUTH_CLIENT_ID
+              value: "{{ .Values.auth0.clientId }}"
+
+
+
+
