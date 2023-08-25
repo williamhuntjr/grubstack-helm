@@ -1,16 +1,16 @@
 replicaCount: 1
 image:
-  repository: "docker.grubstack.app/production/grubstack-core"
+  repository: "docker.grubstack.app/production/grubstack-web"
   tag: "latest"
   pullPolicy: Always
 service:
   type: LoadBalancer
   port: 3000
 customer:
-  host: core.grubstack.app
+  host: web.grubstack.app
   apiUrl: api.grubstack.app
   corporateUrl: grubstack.app
-  siteUrl: core.grubstack.app
+  siteUrl: web.grubstack.app
   tenantId: abcdefg
   slug: abcd123
 auth0:

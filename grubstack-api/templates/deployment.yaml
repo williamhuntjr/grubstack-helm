@@ -21,8 +21,17 @@ spec:
     spec:
       imagePullSecrets:
         - name: production-cred
+      volumes:
+        - name: uploads-volume
+          nfs:
+            server: 107.161.173.73
+            path: /var/grubstack/uploads
+            readOnly: false
       containers:
         - name: {{ .Chart.Name }}
+          volumeMounts:
+          - mountPath: /uploads
+            name: uploads-volume
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
