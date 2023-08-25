@@ -13,6 +13,7 @@ customer:
   siteUrl: web.grubstack.app
   tenantId: abcdefg
   slug: abcd123
+  accessToken: abcdefg
 auth0:
   domain: auth0.com
   clientId: abcdefg

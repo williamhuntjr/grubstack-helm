@@ -59,3 +59,5 @@ spec:
               value: "{{ .Values.auth0.domain }}"
             - name: AUTH0_AUDIENCE
               value: "{{ .Values.auth0.audience }}"
+            - name: ACCESS_TOKEN
+              value: "{{ .Values.customer.accessToken }}"

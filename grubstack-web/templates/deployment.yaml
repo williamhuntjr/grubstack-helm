@@ -46,6 +46,6 @@ spec:
               value: "{{ .Values.app.nodeEnv }}"
             - name: APP_SLUG
               value: "{{ .Values.customer.slug }}"
-
-
+            - name: ACCESS_TOKEN
+              value: "{{ .Values.customer.accessToken }}"
 

@@ -9,6 +9,7 @@ service:
 customer:
   host: api.grubstack.app
   tenantId: abcdef123456
+  accessToken: abcdefg
 database:
   host: localhost
   name: grubstack_core
