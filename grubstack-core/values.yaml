@@ -12,9 +12,6 @@ customer:
   corporateUrl: grubstack.app
   siteUrl: core.grubstack.app
   tenantId: abcdefg
-  slug: abcd123
-auth0:
-  domain: auth0.com
-  clientId: abcdefg
+  cdnUrl: https://cdn.grubstack.app
 app:
   nodeEnv: production

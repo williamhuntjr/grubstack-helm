@@ -36,16 +36,9 @@ spec:
               value: "{{ .Values.customer.productionUrl }}"
             - name: SITE_URL
               value: "{{ .Values.customer.siteUrl }}"
-            - name: AUTH_DOMAIN
-              value: "{{ .Values.auth0.domain }}"
-            - name: AUTH_CLIENT_ID
-              value: "{{ .Values.auth0.clientId }}"
             - name: TENANT_ID
               value: "{{ .Values.customer.tenantId }}"
             - name: NODE_ENV
               value: "{{ .Values.app.nodeEnv }}"
-            - name: APP_SLUG
-              value: "{{ .Values.customer.slug }}"
-
-
-
+            - name: CDN_URL
+              value: "{{ .Values.customer.cdnUrl }}"
