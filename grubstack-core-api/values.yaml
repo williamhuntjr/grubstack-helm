@@ -1,6 +1,6 @@
 replicaCount: 1
 image:
-  repository: "docker.grubstack.app/production/grubstack-api"
+  repository: "docker.grubstack.app/production/grubstack-core-api"
   tag: "latest"
   pullPolicy: Always
 service:

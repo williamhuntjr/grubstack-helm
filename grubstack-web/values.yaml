@@ -8,14 +8,8 @@ service:
   port: 3000
 customer:
   host: web.grubstack.app
-  apiUrl: api.grubstack.app
-  corporateUrl: grubstack.app
-  siteUrl: web.grubstack.app
-  tenantId: abcdefg
-  slug: abcd123
+  apiUrl: https://api.grubstack.app/v1
   accessToken: abcdefg
-auth0:
-  domain: auth0.com
-  clientId: abcdefg
+  squareAppId: abcdefg
 app:
   nodeEnv: production
