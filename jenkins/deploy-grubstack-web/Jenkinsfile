@@ -1,0 +1,35 @@
+pipeline {
+    agent any
+    parameters {
+        string(name: 'ACTION', defaultValue: 'deploy', description: 'deploy or remove')
+        string(name: 'SLUG', description: 'Customer slug')
+        string(name: 'API_URL', description: 'Customer API URL')
+        string(name: 'ACCESS_TOKEN', description: 'Customer access token')
+        string(name: 'SQUARE_APP_ID', description: 'Square application ID')
+    }
+    stages {
+        stage('Deploy') {
+            when {
+                expression { params.ACTION == 'deploy' }
+            }
+            steps {
+                sh """
+                    helm upgrade --install grubstack-web-${params.SLUG} /opt/grubstack-helm/grubstack-web \\
+                        --set customer.host=web-${params.SLUG}.grubstack.app \\
+                        --set customer.apiUrl=${params.API_URL} \\
+                        --set customer.accessToken=${params.ACCESS_TOKEN} \\
+                        --set customer.squareAppId=${params.SQUARE_APP_ID} \\
+                        --namespace grubstack
+                """
+            }
+        }
+        stage('Remove') {
+            when {
+                expression { params.ACTION == 'remove' }
+            }
+            steps {
+                sh "helm uninstall grubstack-web-${params.SLUG} --namespace grubstack"
+            }
+        }
+    }
+}

@@ -53,8 +53,8 @@ spec:
               value: "{{ .Values.database.password }}"
             - name: DATABASE_SSL
               value: "{{ .Values.database.ssl }}"
-            - name: CORPORATE_DB
-              value: "{{ .Values.database.corporate }}"
+            - name: PRODUCTION_DB
+              value: "{{ .Values.database.production }}"
             - name: AUTH0_DOMAIN
               value: "{{ .Values.auth0.domain }}"
             - name: AUTH0_AUDIENCE

@@ -9,7 +9,7 @@ service:
 customer:
   host: core.grubstack.app
   apiUrl: api.grubstack.app
-  corporateUrl: grubstack.app
+  productionUrl: https://grubstack.app
   siteUrl: core.grubstack.app
   tenantId: abcdefg
   cdnUrl: https://cdn.grubstack.app

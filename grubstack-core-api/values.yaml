@@ -17,7 +17,7 @@ database:
   user: grubstack
   password: grubstack
   ssl: prefer
-  corporate: grubstack
+  production: grubstack
 auth0:
   domain: us.auth0.com
   audience: https://api.grubstack.app/v1

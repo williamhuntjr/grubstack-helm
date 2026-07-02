@@ -1,0 +1,47 @@
+pipeline {
+    agent any
+    parameters {
+        string(name: 'ACTION', defaultValue: 'deploy', description: 'deploy or remove')
+        string(name: 'SLUG', description: 'Customer slug')
+        string(name: 'TENANT_ID', description: 'Tenant UUID')
+        string(name: 'ACCESS_TOKEN', description: 'Customer access token')
+        string(name: 'DATABASE_HOST', description: 'Database host')
+        string(name: 'DATABASE_NAME', description: 'Database name')
+        string(name: 'DATABASE_PORT', defaultValue: '5432', description: 'Database port')
+        string(name: 'DATABASE_USER', description: 'Database user')
+        string(name: 'DATABASE_PASSWORD', description: 'Database password')
+        string(name: 'DATABASE_SSL', defaultValue: 'require', description: 'Database SSL mode')
+        string(name: 'PRODUCTION_DB', description: 'Production database name')
+    }
+    stages {
+        stage('Deploy') {
+            when {
+                expression { params.ACTION == 'deploy' }
+            }
+            steps {
+                sh """
+                    helm upgrade --install grubstack-api-${params.SLUG} /opt/grubstack-helm/grubstack-core-api \\
+                        --set customer.host=api-${params.SLUG}.grubstack.app \\
+                        --set customer.tenantId=${params.TENANT_ID} \\
+                        --set customer.accessToken=${params.ACCESS_TOKEN} \\
+                        --set database.host=${params.DATABASE_HOST} \\
+                        --set database.name=${params.DATABASE_NAME} \\
+                        --set database.port=${params.DATABASE_PORT} \\
+                        --set database.user=${params.DATABASE_USER} \\
+                        --set database.password=${params.DATABASE_PASSWORD} \\
+                        --set database.ssl=${params.DATABASE_SSL} \\
+                        --set database.production=${params.PRODUCTION_DB} \\
+                        --namespace grubstack
+                """
+            }
+        }
+        stage('Remove') {
+            when {
+                expression { params.ACTION == 'remove' }
+            }
+            steps {
+                sh "helm uninstall grubstack-api-${params.SLUG} --namespace grubstack"
+            }
+        }
+    }
+}
