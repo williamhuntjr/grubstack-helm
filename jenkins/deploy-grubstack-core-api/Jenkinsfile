@@ -20,7 +20,7 @@ pipeline {
             }
             steps {
                 sh """
-                    helm upgrade --install grubstack-api-${params.SLUG} /opt/grubstack-helm/grubstack-core-api \\
+                    helm upgrade --install grubstack-core-api-${params.SLUG} /opt/grubstack-helm/grubstack-core-api \\
                         --set customer.host=api-${params.SLUG}.grubstack.app \\
                         --set customer.tenantId=${params.TENANT_ID} \\
                         --set customer.accessToken=${params.ACCESS_TOKEN} \\
@@ -40,7 +40,7 @@ pipeline {
                 expression { params.ACTION == 'remove' }
             }
             steps {
-                sh "helm uninstall grubstack-api-${params.SLUG} --namespace grubstack"
+                sh "helm uninstall grubstack-core-api-${params.SLUG} --namespace grubstack"
             }
         }
     }
