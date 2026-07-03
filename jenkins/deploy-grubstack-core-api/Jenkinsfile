@@ -31,7 +31,8 @@ pipeline {
                         --set database.password=${params.DATABASE_PASSWORD} \\
                         --set database.ssl=${params.DATABASE_SSL} \\
                         --set database.production=${params.PRODUCTION_DB} \\
-                        --namespace grubstack
+                        --namespace grubstack \\
+                        --create-namespace
                 """
             }
         }

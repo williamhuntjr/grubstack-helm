@@ -19,7 +19,8 @@ pipeline {
                         --set customer.apiUrl=${params.API_URL} \\
                         --set customer.accessToken=${params.ACCESS_TOKEN} \\
                         --set customer.squareAppId=${params.SQUARE_APP_ID} \\
-                        --namespace grubstack
+                        --namespace grubstack \\
+                        --create-namespace
                 """
             }
         }

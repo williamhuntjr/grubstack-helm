@@ -23,7 +23,8 @@ pipeline {
                         --set customer.productionUrl=${params.PRODUCTION_URL} \\
                         --set customer.siteUrl=${params.SITE_URL} \\
                         --set customer.cdnUrl=${params.CDN_URL} \\
-                        --namespace grubstack
+                        --namespace grubstack \\
+                        --create-namespace
                 """
             }
         }
