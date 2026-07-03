@@ -33,6 +33,7 @@ pipeline {
                         --set database.production=${params.PRODUCTION_DB} \\
                         --namespace grubstack \\
                         --create-namespace
+                    kubectl rollout restart deployment/grubstack-core-api-${params.SLUG} -n grubstack
                 """
             }
         }

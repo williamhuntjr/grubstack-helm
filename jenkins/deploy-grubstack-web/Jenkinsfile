@@ -21,6 +21,7 @@ pipeline {
                         --set customer.squareAppId=${params.SQUARE_APP_ID} \\
                         --namespace grubstack \\
                         --create-namespace
+                    kubectl rollout restart deployment/grubstack-web-${params.SLUG} -n grubstack
                 """
             }
         }
