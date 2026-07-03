@@ -33,12 +33,12 @@ pipeline {
                         --set database.ssl=${params.DATABASE_SSL} \\
                         --set database.production=${params.PRODUCTION_DB} \\
                         --set customer.productionApiUrl=${params.PRODUCTION_API_URL} \\
-                        --set mail.server=${GS_MAIL_SERVER} \\
-                        --set mail.port=${GS_MAIL_PORT} \\
-                        --set mail.useTls=${GS_MAIL_USE_TLS} \\
-                        --set mail.username=${GS_MAIL_USERNAME} \\
-                        --set mail.password=${GS_MAIL_PASSWORD} \\
-                        --set "mail.defaultSender=${GS_MAIL_DEFAULT_SENDER}" \\
+                        --set mail.server=\${GS_MAIL_SERVER} \\
+                        --set mail.port=\${GS_MAIL_PORT} \\
+                        --set mail.useTls=\${GS_MAIL_USE_TLS} \\
+                        --set mail.username=\${GS_MAIL_USERNAME} \\
+                        --set mail.password=\${GS_MAIL_PASSWORD} \\
+                        --set "mail.defaultSender=\${GS_MAIL_DEFAULT_SENDER}" \\
                         --namespace grubstack \\
                         --create-namespace
                     kubectl rollout restart deployment/grubstack-core-api-${params.SLUG} -n grubstack
