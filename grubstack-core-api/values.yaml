@@ -12,6 +12,7 @@ customer:
   accessToken: abcdefg
   webAppUrl: https://order.grubstack.app
   revalidateSecret: changeme
+  productionApiUrl: https://prod-api.grubstack.app/v1
 database:
   host: localhost
   name: grubstack_core
