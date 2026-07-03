@@ -61,3 +61,7 @@ spec:
               value: "{{ .Values.auth0.audience }}"
             - name: ACCESS_TOKEN
               value: "{{ .Values.customer.accessToken }}"
+            - name: WEB_APP_URL
+              value: "{{ .Values.customer.webAppUrl }}"
+            - name: REVALIDATE_SECRET
+              value: "{{ .Values.customer.revalidateSecret }}"

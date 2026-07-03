@@ -38,4 +38,6 @@ spec:
               value: "{{ .Values.customer.squareAppId }}"
             - name: NODE_ENV
               value: "{{ .Values.app.nodeEnv }}"
+            - name: REVALIDATE_SECRET
+              value: "{{ .Values.customer.revalidateSecret }}"
 

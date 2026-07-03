@@ -10,6 +10,8 @@ customer:
   host: api.grubstack.app
   tenantId: abcdef123456
   accessToken: abcdefg
+  webAppUrl: https://order.grubstack.app
+  revalidateSecret: changeme
 database:
   host: localhost
   name: grubstack_core
