@@ -4,6 +4,7 @@ metadata:
   name: {{ .Release.Name }}
   annotations:
     kubernetes.io/ingress.class: haproxy
+    haproxy.org/health-check-status-codes: "200,404"
 spec:
   rules:
   - host: {{ .Values.customer.host }}
