@@ -12,7 +12,6 @@ pipeline {
         string(name: 'DATABASE_PASSWORD', description: 'Database password')
         string(name: 'DATABASE_SSL', defaultValue: 'require', description: 'Database SSL mode')
         string(name: 'PRODUCTION_DB', description: 'Production database name')
-        string(name: 'PRODUCTION_API_URL', description: 'URL of the prod-api service (e.g. https://prod-api.grubstack.app/v1)')
     }
     stages {
         stage('Deploy') {
@@ -32,7 +31,7 @@ pipeline {
                         --set database.password=${params.DATABASE_PASSWORD} \\
                         --set database.ssl=${params.DATABASE_SSL} \\
                         --set database.production=${params.PRODUCTION_DB} \\
-                        --set customer.productionApiUrl=${params.PRODUCTION_API_URL} \\
+                        --set customer.productionApiUrl=\${GS_PRODUCTION_API_URL} \\
                         --set mail.server=\${GS_MAIL_SERVER} \\
                         --set mail.port=\${GS_MAIL_PORT} \\
                         --set mail.useTls=\${GS_MAIL_USE_TLS} \\
