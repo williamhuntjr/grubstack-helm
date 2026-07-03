@@ -24,3 +24,10 @@ database:
 auth0:
   domain: us.auth0.com
   audience: https://api.grubstack.app/v1
+mail:
+  server: mail.grubstack.app
+  port: "587"
+  useTls: "yes"
+  username: api@grubstack.app
+  password: changeme
+  defaultSender: "GrubStack <api@grubstack.app>"

@@ -67,3 +67,15 @@ spec:
               value: "{{ .Values.customer.revalidateSecret }}"
             - name: PRODUCTION_API_URL
               value: "{{ .Values.customer.productionApiUrl }}"
+            - name: MAIL_SERVER
+              value: "{{ .Values.mail.server }}"
+            - name: MAIL_PORT
+              value: "{{ .Values.mail.port }}"
+            - name: MAIL_USE_TLS
+              value: "{{ .Values.mail.useTls }}"
+            - name: MAIL_USERNAME
+              value: "{{ .Values.mail.username }}"
+            - name: MAIL_PASSWORD
+              value: "{{ .Values.mail.password }}"
+            - name: MAIL_DEFAULT_SENDER
+              value: "{{ .Values.mail.defaultSender }}"
