@@ -14,8 +14,13 @@ pipeline {
             }
             steps {
                 sh """
+                    kubectl get secret grubstack-revalidate-${params.SLUG} -n grubstack > /dev/null 2>&1 || \\
+                        kubectl create secret generic grubstack-revalidate-${params.SLUG} \\
+                            --from-literal=secret=\$(openssl rand -hex 32) \\
+                            -n grubstack --create-namespace
                     helm upgrade --install grubstack-web-${params.SLUG} /opt/grubstack-helm/grubstack-web \\
                         --set customer.host=web-${params.SLUG}.grubstack.app \\
+                        --set customer.slug=${params.SLUG} \\
                         --set customer.apiUrl=${params.API_URL} \\
                         --set customer.accessToken=${params.ACCESS_TOKEN} \\
                         --set customer.squareAppId=${params.SQUARE_APP_ID} \\

@@ -8,9 +8,9 @@ service:
   port: 3000
 customer:
   host: web.grubstack.app
+  slug: changeme
   apiUrl: https://api.grubstack.app/v1
   accessToken: abcdefg
   squareAppId: abcdefg
-  revalidateSecret: changeme
 app:
   nodeEnv: production

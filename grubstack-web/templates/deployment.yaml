@@ -39,5 +39,8 @@ spec:
             - name: NODE_ENV
               value: "{{ .Values.app.nodeEnv }}"
             - name: REVALIDATE_SECRET
-              value: "{{ .Values.customer.revalidateSecret }}"
+              valueFrom:
+                secretKeyRef:
+                  name: grubstack-revalidate-{{ .Values.customer.slug }}
+                  key: secret
 

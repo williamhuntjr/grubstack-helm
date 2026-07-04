@@ -20,8 +20,14 @@ pipeline {
             }
             steps {
                 sh """
+                    kubectl get secret grubstack-revalidate-${params.SLUG} -n grubstack > /dev/null 2>&1 || \\
+                        kubectl create secret generic grubstack-revalidate-${params.SLUG} \\
+                            --from-literal=secret=\$(openssl rand -hex 32) \\
+                            -n grubstack --create-namespace
                     helm upgrade --install grubstack-core-api-${params.SLUG} /opt/grubstack-helm/grubstack-core-api \\
                         --set customer.host=api-${params.SLUG}.grubstack.app \\
+                        --set customer.slug=${params.SLUG} \\
+                        --set customer.webAppUrl=https://web-${params.SLUG}.grubstack.app \\
                         --set customer.tenantId=${params.TENANT_ID} \\
                         --set customer.accessToken=${params.ACCESS_TOKEN} \\
                         --set database.host=${params.DATABASE_HOST} \\
@@ -39,6 +45,8 @@ pipeline {
                         --set mail.username=\${GS_MAIL_USERNAME} \\
                         --set mail.password=\${GS_MAIL_PASSWORD} \\
                         --set "mail.defaultSender=\${GS_MAIL_DEFAULT_SENDER}" \\
+                        --set mail.enabled=\${GS_MAIL_ENABLED} \\
+                        --set mail.debug=\${GS_MAIL_DEBUG} \\
                         --namespace grubstack \\
                         --create-namespace
                     kubectl rollout restart deployment/grubstack-core-api-${params.SLUG} -n grubstack

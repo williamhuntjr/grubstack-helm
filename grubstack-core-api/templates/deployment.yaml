@@ -64,7 +64,10 @@ spec:
             - name: WEB_APP_URL
               value: "{{ .Values.customer.webAppUrl }}"
             - name: REVALIDATE_SECRET
-              value: "{{ .Values.customer.revalidateSecret }}"
+              valueFrom:
+                secretKeyRef:
+                  name: grubstack-revalidate-{{ .Values.customer.slug }}
+                  key: secret
             - name: PRODUCTION_API_URL
               value: "{{ .Values.customer.productionApiUrl }}"
             - name: MAIL_SERVER
@@ -81,3 +84,7 @@ spec:
               value: "{{ .Values.mail.password }}"
             - name: MAIL_DEFAULT_SENDER
               value: "{{ .Values.mail.defaultSender }}"
+            - name: MAIL_ENABLED
+              value: "{{ .Values.mail.enabled }}"
+            - name: MAIL_DEBUG
+              value: "{{ .Values.mail.debug }}"

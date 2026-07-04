@@ -8,10 +8,10 @@ service:
   port: 80
 customer:
   host: api.grubstack.app
+  slug: changeme
   tenantId: abcdef123456
   accessToken: abcdefg
   webAppUrl: https://order.grubstack.app
-  revalidateSecret: changeme
   productionApiUrl: https://prod-api.grubstack.app/v1
 database:
   host: localhost
@@ -32,3 +32,5 @@ mail:
   username: api@grubstack.app
   password: changeme
   defaultSender: "GrubStack <api@grubstack.app>"
+  enabled: "yes"
+  debug: "no"
