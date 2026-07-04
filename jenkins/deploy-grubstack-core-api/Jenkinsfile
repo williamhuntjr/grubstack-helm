@@ -35,6 +35,7 @@ pipeline {
                         --set mail.server=\${GS_MAIL_SERVER} \\
                         --set mail.port=\${GS_MAIL_PORT} \\
                         --set mail.useTls=\${GS_MAIL_USE_TLS} \\
+                        --set mail.useSsl=\${GS_MAIL_USE_SSL} \\
                         --set mail.username=\${GS_MAIL_USERNAME} \\
                         --set mail.password=\${GS_MAIL_PASSWORD} \\
                         --set "mail.defaultSender=\${GS_MAIL_DEFAULT_SENDER}" \\

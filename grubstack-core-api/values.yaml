@@ -27,7 +27,8 @@ auth0:
 mail:
   server: mail.grubstack.app
   port: "587"
-  useTls: "yes"
+  useTls: "no"
+  useSsl: "no"
   username: api@grubstack.app
   password: changeme
   defaultSender: "GrubStack <api@grubstack.app>"

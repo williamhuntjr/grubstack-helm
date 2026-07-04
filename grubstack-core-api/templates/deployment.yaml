@@ -73,6 +73,8 @@ spec:
               value: "{{ .Values.mail.port }}"
             - name: MAIL_USE_TLS
               value: "{{ .Values.mail.useTls }}"
+            - name: MAIL_USE_SSL
+              value: "{{ .Values.mail.useSsl }}"
             - name: MAIL_USERNAME
               value: "{{ .Values.mail.username }}"
             - name: MAIL_PASSWORD
