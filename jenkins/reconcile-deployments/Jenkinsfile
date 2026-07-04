@@ -1,0 +1,52 @@
+pipeline {
+    agent any
+    triggers {
+        cron('H 2 * * *')
+    }
+    stages {
+        stage('Sync Subscriptions') {
+            steps {
+                sh """
+                    echo "Syncing subscription state from Stripe to database..."
+                    RESULT=\$(curl -sf -X POST \${GS_PROD_API_URL}/tenants/sync \\
+                        -H 'X-Service-Token: \${GS_SERVICE_TOKEN}')
+                    echo "Sync result: \$RESULT"
+                """
+            }
+        }
+        stage('Remove Inactive Deployments') {
+            steps {
+                sh """
+                    echo "Fetching active tenant slugs from database..."
+                    ACTIVE_SLUGS=\$(curl -sf \${GS_PROD_API_URL}/tenants/active \\
+                        -H 'X-Service-Token: \${GS_SERVICE_TOKEN}' | \\
+                        python3 -c "import sys, json; [print(s) for s in json.load(sys.stdin)['data']]")
+
+                    if [ -z "\$ACTIVE_SLUGS" ]; then
+                        echo "No active tenants returned — aborting to avoid wiping all deployments"
+                        exit 1
+                    fi
+
+                    echo "Active tenants:"
+                    echo "\$ACTIVE_SLUGS"
+
+                    helm list -n grubstack --short | grep '^grubstack-web-' | while read RELEASE; do
+                        SLUG=\${RELEASE#grubstack-web-}
+
+                        if echo "\$ACTIVE_SLUGS" | grep -qx "\$SLUG"; then
+                            echo "[\$SLUG] active — skipping"
+                        else
+                            echo "[\$SLUG] inactive — removing deployments"
+                            helm uninstall grubstack-web-\$SLUG -n grubstack || true
+                            helm uninstall grubstack-core-api-\$SLUG -n grubstack || true
+                            helm uninstall grubstack-core-\$SLUG -n grubstack || true
+                            kubectl delete secret grubstack-revalidate-\$SLUG -n grubstack || true
+                        fi
+                    done
+
+                    echo "Reconciliation complete"
+                """
+            }
+        }
+    }
+}
