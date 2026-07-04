@@ -8,8 +8,8 @@ pipeline {
             steps {
                 sh """
                     echo "Syncing subscription state from Stripe to database..."
-                    RESULT=\$(curl -sf -X POST \${GS_PROD_API_URL}/tenants/sync \\
-                        -H 'X-Service-Token: \${GS_SERVICE_TOKEN}')
+                    RESULT=\$(curl -sf -X POST ${env.GS_PROD_API_URL}/tenants/sync \\
+                        -H 'X-Service-Token: ${env.GS_SERVICE_TOKEN}')
                     echo "Sync result: \$RESULT"
                 """
             }
@@ -18,8 +18,8 @@ pipeline {
             steps {
                 sh """
                     echo "Fetching active tenant slugs from database..."
-                    ACTIVE_SLUGS=\$(curl -sf \${GS_PROD_API_URL}/tenants/active \\
-                        -H 'X-Service-Token: \${GS_SERVICE_TOKEN}' | \\
+                    ACTIVE_SLUGS=\$(curl -sf ${env.GS_PROD_API_URL}/tenants/active \\
+                        -H 'X-Service-Token: ${env.GS_SERVICE_TOKEN}' | \\
                         python3 -c "import sys, json; [print(s) for s in json.load(sys.stdin)['data']]")
 
                     if [ -z "\$ACTIVE_SLUGS" ]; then
