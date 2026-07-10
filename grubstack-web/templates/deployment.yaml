@@ -36,6 +36,8 @@ spec:
               value: "{{ .Values.customer.accessToken }}"
             - name: SQUARE_APP_ID
               value: "{{ .Values.customer.squareAppId }}"
+            - name: SITE_URL
+              value: "https://{{ .Values.customer.host }}"
             - name: NODE_ENV
               value: "{{ .Values.app.nodeEnv }}"
             - name: REVALIDATE_SECRET
