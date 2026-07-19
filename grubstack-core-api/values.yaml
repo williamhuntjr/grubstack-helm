@@ -24,6 +24,8 @@ database:
 auth0:
   domain: us.auth0.com
   audience: https://api.grubstack.app/v1
+ai:
+  model: claude-sonnet-5
 mail:
   server: mail.grubstack.app
   port: "587"

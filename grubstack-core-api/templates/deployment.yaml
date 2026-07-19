@@ -70,6 +70,13 @@ spec:
                   key: secret
             - name: PRODUCTION_API_URL
               value: "{{ .Values.customer.productionApiUrl }}"
+            - name: AI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: grubstack-ai-key
+                  key: api_key
+            - name: AI_MODEL
+              value: "{{ .Values.ai.model }}"
             - name: MAIL_SERVER
               value: "{{ .Values.mail.server }}"
             - name: MAIL_PORT
