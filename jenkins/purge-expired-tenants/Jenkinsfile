@@ -1,0 +1,25 @@
+pipeline {
+    agent any
+    triggers {
+        cron('H 3 * * *')
+    }
+    parameters {
+        booleanParam(
+            name: 'DRY_RUN',
+            defaultValue: true,
+            description: 'Leave true to only report what would be purged. Set false to actually delete — scheduled (cron) runs always use the default above; only a manual "Build with Parameters" run can set this to false.'
+        )
+    }
+    stages {
+        stage('Purge Expired Tenants') {
+            steps {
+                sh """
+                    echo "Running tenant purge (dry_run=\${params.DRY_RUN})..."
+                    RESULT=\$(curl -sf -X POST "${env.GS_PROD_API_URL}/tenants/purge?dry_run=\${params.DRY_RUN}" \\
+                        -H 'X-Service-Token: ${env.GS_SERVICE_TOKEN}')
+                    echo "Purge result: \$RESULT"
+                """
+            }
+        }
+    }
+}
