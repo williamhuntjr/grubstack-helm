@@ -15,11 +15,56 @@ pipeline {
             steps {
                 sh """
                     echo "Running tenant purge (dry_run=${params.DRY_RUN})..."
-                    RESULT=\$(curl -sf -X POST "${env.GS_PROD_API_URL}/tenants/purge?dry_run=${params.DRY_RUN}" \\
-                        -H 'X-Service-Token: ${env.GS_SERVICE_TOKEN}')
-                    echo "Purge result: \$RESULT"
+                    curl -sf -X POST "${env.GS_PROD_API_URL}/tenants/purge?dry_run=${params.DRY_RUN}" \\
+                        -H 'X-Service-Token: ${env.GS_SERVICE_TOKEN}' \\
+                        -o purge_result.json
+                    cat purge_result.json
                 """
             }
+        }
+    }
+    post {
+        // Writing the notifier as its own file (rather than inlining python in a shell -c
+        // string) avoids stacking Groovy/shell/python quoting rules on top of each other —
+        // the same class of bug that broke this file's DRY_RUN substitution previously.
+        success {
+            writeFile file: 'notify_slack.py', text: '''
+import json
+
+with open("purge_result.json") as f:
+    data = json.load(f)["data"]
+
+tenants = data["results"]
+if not tenants:
+    summary = "No tenants eligible for purge."
+else:
+    label = "Would purge" if data["dry_run"] else "Purged"
+    lines = [f"{label} {len(tenants)} tenant(s):"]
+    for t in tenants:
+        status = "OK" if t["success"] else "FAILED: " + str(t.get("error", "unknown error"))
+        lines.append(f"  - {t['slug']} (canceled {t['days_since_cancellation']}d ago) - {status}")
+    summary = "\\n".join(lines)
+
+mode = "DRY RUN" if data["dry_run"] else "LIVE PURGE"
+payload = json.dumps({"text": f":mag: *Tenant Purge Report* ({mode})\\n{summary}"})
+with open("slack_payload.json", "w") as f:
+    f.write(payload)
+'''
+            sh 'python3 notify_slack.py'
+            // Slack delivery failing (bad webhook, outage) shouldn't flip an otherwise
+            // successful purge run to red in Jenkins — hence the trailing || true.
+            sh "curl -sf -X POST \"${env.GS_SLACK_WEBHOOK_URL}\" -H 'Content-Type: application/json' -d @slack_payload.json || true"
+        }
+        failure {
+            writeFile file: 'notify_slack_failure.py', text: """
+import json
+
+payload = json.dumps({"text": ":rotating_light: *Tenant Purge job FAILED* - <${env.BUILD_URL}console|view console log>"})
+with open("slack_payload.json", "w") as f:
+    f.write(payload)
+"""
+            sh 'python3 notify_slack_failure.py'
+            sh "curl -sf -X POST \"${env.GS_SLACK_WEBHOOK_URL}\" -H 'Content-Type: application/json' -d @slack_payload.json || true"
         }
     }
 }
