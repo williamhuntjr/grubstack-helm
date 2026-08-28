@@ -75,6 +75,11 @@ spec:
                 secretKeyRef:
                   name: grubstack-ai-key
                   key: api_key
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: grubstack-jwt-secret
+                  key: secret
             - name: AI_MODEL
               value: "{{ .Values.ai.model }}"
             - name: MAIL_SERVER
