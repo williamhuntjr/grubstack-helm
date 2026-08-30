@@ -1,0 +1,15 @@
+replicaCount: 1
+image:
+  repository: "docker.grubstack.app/production/grubstack-terminal"
+  tag: "latest"
+  pullPolicy: Always
+service:
+  type: LoadBalancer
+  port: 3000
+customer:
+  host: terminal.grubstack.app
+  slug: changeme
+  apiUrl: https://api.grubstack.app/v1
+  accessToken: abcdefg
+app:
+  nodeEnv: production

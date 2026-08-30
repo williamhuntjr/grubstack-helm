@@ -1,0 +1,36 @@
+pipeline {
+    agent any
+    parameters {
+        string(name: 'ACTION', defaultValue: 'deploy', description: 'deploy or remove')
+        string(name: 'SLUG', description: 'Customer slug')
+        string(name: 'API_URL', description: 'Customer API URL')
+        string(name: 'ACCESS_TOKEN', description: 'Customer access token')
+    }
+    stages {
+        stage('Deploy') {
+            when {
+                expression { params.ACTION == 'deploy' }
+            }
+            steps {
+                sh """
+                    helm upgrade --install grubstack-terminal-${params.SLUG} /opt/grubstack-helm/grubstack-terminal \\
+                        --set customer.host=terminal-${params.SLUG}.grubstack.app \\
+                        --set customer.slug=${params.SLUG} \\
+                        --set customer.apiUrl=${params.API_URL} \\
+                        --set customer.accessToken=${params.ACCESS_TOKEN} \\
+                        --namespace grubstack \\
+                        --create-namespace
+                    kubectl rollout restart deployment/grubstack-terminal-${params.SLUG} -n grubstack
+                """
+            }
+        }
+        stage('Remove') {
+            when {
+                expression { params.ACTION == 'remove' }
+            }
+            steps {
+                sh "helm uninstall grubstack-terminal-${params.SLUG} --namespace grubstack"
+            }
+        }
+    }
+}
