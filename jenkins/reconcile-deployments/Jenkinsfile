@@ -40,6 +40,9 @@ pipeline {
                             helm uninstall grubstack-web-\$SLUG -n grubstack || true
                             helm uninstall grubstack-core-api-\$SLUG -n grubstack || true
                             helm uninstall grubstack-core-\$SLUG -n grubstack || true
+                            # grubstack-terminal is an optional add-on — not every tenant has a release
+                            # for it, so this is expected to no-op (via || true) for most inactive slugs.
+                            helm uninstall grubstack-terminal-\$SLUG -n grubstack || true
                             kubectl delete secret grubstack-revalidate-\$SLUG -n grubstack || true
                         fi
                     done

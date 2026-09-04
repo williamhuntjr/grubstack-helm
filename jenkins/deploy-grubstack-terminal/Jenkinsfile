@@ -29,7 +29,9 @@ pipeline {
                 expression { params.ACTION == 'remove' }
             }
             steps {
-                sh "helm uninstall grubstack-terminal-${params.SLUG} --namespace grubstack"
+                // Terminal is an optional add-on — a remove request for a tenant who never
+                // had it installed is a no-op, not a failure.
+                sh "helm uninstall grubstack-terminal-${params.SLUG} --namespace grubstack || true"
             }
         }
     }
