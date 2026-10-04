@@ -20,10 +20,10 @@ pipeline {
             }
             steps {
                 sh """
-                    kubectl get secret grubstack-revalidate-${params.SLUG} -n grubstack > /dev/null 2>&1 || \\
-                        kubectl create secret generic grubstack-revalidate-${params.SLUG} \\
-                            --from-literal=secret=\$(openssl rand -hex 32) \\
-                            -n grubstack
+                    kubectl create secret generic grubstack-revalidate-${params.SLUG} \\
+                        --from-literal=secret=\$(openssl rand -hex 32) \\
+                        -n grubstack 2>/dev/null || \\
+                        kubectl get secret grubstack-revalidate-${params.SLUG} -n grubstack > /dev/null
                     helm upgrade --install grubstack-core-api-${params.SLUG} /opt/grubstack-helm/grubstack-core-api \\
                         --set customer.host=api-${params.SLUG}.grubstack.app \\
                         --set customer.slug=${params.SLUG} \\
