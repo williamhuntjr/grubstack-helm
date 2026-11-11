@@ -41,6 +41,17 @@ spec:
           env:
             - name: TENANT_ID
               value: "{{ .Values.customer.tenantId }}"
+            - name: TENANT_SLUG
+              value: "{{ .Values.customer.slug }}"
+            # Sentry error reporting. One shared secret for every tenant, created once with:
+            #   kubectl create secret generic grubstack-sentry -n grubstack --from-literal=core_api_dsn=<DSN>
+            # optional: pods start normally (Sentry off) if the secret doesn't exist.
+            - name: SENTRY_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: grubstack-sentry
+                  key: core_api_dsn
+                  optional: true
             - name: DATABASE_HOST
               value: "{{ .Values.database.host }}"
             - name: DATABASE_NAME
