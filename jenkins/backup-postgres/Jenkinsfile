@@ -5,6 +5,7 @@
 //   Credentials  postgres-backup   username/password of the read-only `backup` Postgres role
 //                aws-backup        username = AWS access key ID, password = secret access key
 //   Global env   GS_BACKUP_DB_HOST, GS_BACKUP_S3_BUCKET, GS_BACKUP_AWS_REGION, GS_SLACK_WEBHOOK_URL (#ops)
+//                GS_BACKUP_HEARTBEAT_URL (optional) — Uptime Kuma Push monitor URL, called after each good backup
 pipeline {
     agent any
     triggers {
@@ -127,6 +128,14 @@ with open("slack_payload.json", "w") as f:
             sh 'python3 notify_slack.py'
             // A Slack outage shouldn't turn a good backup red.
             sh "curl -sf -X POST \"${env.GS_SLACK_WEBHOOK_URL}\" -H 'Content-Type: application/json' -d @slack_payload.json || true"
+            // Uptime Kuma "Push" monitor: a successful backup checks in here. If no check-in arrives
+            // within the monitor's interval (failed run, or Jenkins down so nothing ran at all), Uptime
+            // Kuma alerts. Optional — skipped when GS_BACKUP_HEARTBEAT_URL isn't set.
+            script {
+                if (env.GS_BACKUP_HEARTBEAT_URL?.trim()) {
+                    sh 'curl -fsS -m 10 -o /dev/null "$GS_BACKUP_HEARTBEAT_URL" || echo "Uptime Kuma heartbeat failed (backup itself succeeded)"'
+                }
+            }
         }
         failure {
             writeFile file: 'notify_slack_failure.py', text: """
