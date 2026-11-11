@@ -1,0 +1,147 @@
+// Nightly backup of both production databases (grubstack, grubstack_core) to S3.
+// Setup and restore instructions: grubstack-dev-tools/infrastructure/postgres/BACKUPS.md
+//
+// Needs (Jenkins → Manage Jenkins):
+//   Credentials  postgres-backup   username/password of the read-only `backup` Postgres role
+//                aws-backup        username = AWS access key ID, password = secret access key
+//   Global env   GS_BACKUP_DB_HOST, GS_BACKUP_S3_BUCKET, GS_BACKUP_AWS_REGION, GS_SLACK_WEBHOOK_URL (#ops)
+pipeline {
+    agent any
+    triggers {
+        cron('H 2 * * *')
+    }
+    options {
+        disableConcurrentBuilds()
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '60'))
+    }
+    environment {
+        // pg_dump 18 can dump older servers (the current 14 on worker-node-02) and db1's 18.
+        PG_IMAGE  = 'postgres:18'
+        AWS_IMAGE = 'amazon/aws-cli:latest'
+        DATABASES = 'grubstack grubstack_core'
+        S3_PREFIX = 'postgres/nightly'
+    }
+    stages {
+        stage('Dump') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'postgres-backup', usernameVariable: 'PGUSER', passwordVariable: 'PGPASSWORD')]) {
+                    // Single-quoted on purpose: the shell expands the variables, so secrets never
+                    // pass through Groovy string interpolation.
+                    sh '''
+                        set -eu
+                        rm -rf out && mkdir out
+                        date -u +%Y/%m/%d/%H%M%SZ > stamp.txt
+                        date +%s > started.txt
+
+                        # Run as the Jenkins user so the dump files aren't root-owned in the workspace.
+                        pg() {
+                            docker run --rm --user "$(id -u):$(id -g)" \
+                                -e PGUSER -e PGPASSWORD -e PGSSLMODE=require -e PGCONNECT_TIMEOUT=15 \
+                                -v "$PWD/out:/out" "$PG_IMAGE" "$@"
+                        }
+
+                        for db in $DATABASES; do
+                            echo "Dumping $db from $GS_BACKUP_DB_HOST..."
+                            pg pg_dump -h "$GS_BACKUP_DB_HOST" -d "$db" --format=custom --compress=6 --file "/out/$db.dump"
+                            # Reading the archive's table of contents proves the file is complete and readable.
+                            pg pg_restore --list "/out/$db.dump" > /dev/null
+                        done
+
+                        # Roles (without passwords). Needed to restore, since the dumps reference role names.
+                        pg pg_dumpall -h "$GS_BACKUP_DB_HOST" -l postgres --globals-only --no-role-passwords --file /out/globals.sql
+                        pg psql -h "$GS_BACKUP_DB_HOST" -d postgres -Atc 'SHOW server_version' > server_version.txt
+
+                        ls -l out
+                    '''
+                }
+            }
+        }
+        stage('Upload to S3') {
+            steps {
+                writeFile file: 'write_manifest.py', text: '''
+import json, os
+
+files = {name: os.path.getsize(os.path.join("out", name)) for name in sorted(os.listdir("out"))}
+manifest = {
+    "stamp": open("stamp.txt").read().strip(),
+    "source_host": os.environ["GS_BACKUP_DB_HOST"],
+    "server_version": open("server_version.txt").read().strip(),
+    "files": files,
+}
+with open("out/manifest.json", "w") as f:
+    json.dump(manifest, f, indent=2)
+'''
+                withCredentials([usernamePassword(credentialsId: 'aws-backup', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                    sh '''
+                        set -eu
+                        python3 write_manifest.py
+                        STAMP=$(cat stamp.txt)
+
+                        aws() {
+                            docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+                                -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_DEFAULT_REGION="$GS_BACKUP_AWS_REGION" \
+                                -v "$PWD:/work:ro" -w /work "$AWS_IMAGE" "$@"
+                        }
+
+                        aws s3 cp out/ "s3://$GS_BACKUP_S3_BUCKET/$S3_PREFIX/$STAMP/" --recursive --only-show-errors
+
+                        # Pointer to the newest backup, used by the weekly restore test. Written last, so it
+                        # only ever points at a backup whose files all uploaded.
+                        echo "$STAMP" > LATEST
+                        aws s3 cp LATEST "s3://$GS_BACKUP_S3_BUCKET/$S3_PREFIX/LATEST" --only-show-errors
+                    '''
+                }
+            }
+        }
+    }
+    post {
+        success {
+            writeFile file: 'notify_slack.py', text: '''
+import json, os, time
+
+manifest = json.load(open("out/manifest.json"))
+
+def human(size):
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size < 1024:
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+took = int(time.time()) - int(open("started.txt").read())
+dumps = ", ".join(
+    f"{name[:-len('.dump')]} {human(size)}"
+    for name, size in manifest["files"].items()
+    if name.endswith(".dump")
+)
+dest = f"s3://{os.environ['GS_BACKUP_S3_BUCKET']}/{os.environ['S3_PREFIX']}/{manifest['stamp']}/"
+text = (
+    f":floppy_disk: *Nightly DB backup OK* in {took}s: {dumps}"
+    f" (from `{manifest['source_host']}`, Postgres {manifest['server_version'].split()[0]})"
+    f" saved to `{dest}`"
+)
+with open("slack_payload.json", "w") as f:
+    json.dump({"text": text}, f)
+'''
+            sh 'python3 notify_slack.py'
+            // A Slack outage shouldn't turn a good backup red.
+            sh "curl -sf -X POST \"${env.GS_SLACK_WEBHOOK_URL}\" -H 'Content-Type: application/json' -d @slack_payload.json || true"
+        }
+        failure {
+            writeFile file: 'notify_slack_failure.py', text: """
+import json
+
+payload = json.dumps({"text": ":rotating_light: *Nightly DB backup FAILED* - there is no new backup from tonight. <${env.BUILD_URL}console|View console log>"})
+with open("slack_payload.json", "w") as f:
+    f.write(payload)
+"""
+            sh 'python3 notify_slack_failure.py'
+            sh "curl -sf -X POST \"${env.GS_SLACK_WEBHOOK_URL}\" -H 'Content-Type: application/json' -d @slack_payload.json || true"
+        }
+        cleanup {
+            // The dumps contain every customer's data — never leave them on the Jenkins disk.
+            deleteDir()
+        }
+    }
+}

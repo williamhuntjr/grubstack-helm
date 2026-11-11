@@ -1,0 +1,137 @@
+// Weekly proof that the nightly backups actually restore: downloads the newest backup from S3,
+// restores it into a throwaway Postgres container on the Jenkins box, checks the data is there,
+// then deletes everything. Production is never touched.
+// Setup: grubstack-dev-tools/infrastructure/postgres/BACKUPS.md
+//
+// Needs (Jenkins → Manage Jenkins):
+//   Credentials  aws-backup   username = AWS access key ID, password = secret access key
+//   Global env   GS_BACKUP_S3_BUCKET, GS_BACKUP_AWS_REGION, GS_SLACK_WEBHOOK_URL (#ops)
+pipeline {
+    agent any
+    triggers {
+        cron('H 4 * * 0')
+    }
+    options {
+        disableConcurrentBuilds()
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+    environment {
+        PG_IMAGE  = 'postgres:18'
+        AWS_IMAGE = 'amazon/aws-cli:latest'
+        DATABASES = 'grubstack grubstack_core'
+        S3_PREFIX = 'postgres/nightly'
+        CONTAINER = "backup-restore-test-${env.BUILD_NUMBER}"
+    }
+    stages {
+        stage('Download newest backup') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'aws-backup', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                    sh '''
+                        set -eu
+                        rm -rf in && mkdir in
+
+                        aws() {
+                            docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+                                -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_DEFAULT_REGION="$GS_BACKUP_AWS_REGION" \
+                                -v "$PWD:/work" -w /work "$AWS_IMAGE" "$@"
+                        }
+
+                        aws s3 cp "s3://$GS_BACKUP_S3_BUCKET/$S3_PREFIX/LATEST" in/LATEST --only-show-errors
+                        STAMP=$(cat in/LATEST)
+                        echo "Newest backup: $STAMP"
+                        aws s3 cp "s3://$GS_BACKUP_S3_BUCKET/$S3_PREFIX/$STAMP/" in/ --recursive --only-show-errors
+                        ls -l in
+                    '''
+                }
+            }
+        }
+        stage('Restore into throwaway Postgres') {
+            steps {
+                sh '''
+                    set -eu
+                    docker run -d --name "$CONTAINER" -e POSTGRES_PASSWORD=restore-test \
+                        -v "$PWD/in:/in:ro" "$PG_IMAGE" > /dev/null
+
+                    ready=no
+                    for i in $(seq 1 30); do
+                        if docker exec "$CONTAINER" pg_isready -U postgres -q; then ready=yes; break; fi
+                        sleep 2
+                    done
+                    [ "$ready" = yes ] || { echo "Throwaway Postgres never became ready"; exit 1; }
+
+                    # Roles first. The 'postgres' role already exists in a fresh container, so its CREATE ROLE
+                    # fails harmlessly; any role that's really missing makes pg_restore fail below.
+                    docker exec "$CONTAINER" psql -U postgres -q -f /in/globals.sql || true
+
+                    for db in $DATABASES; do
+                        echo "Restoring $db..."
+                        docker exec "$CONTAINER" createdb -U postgres "$db"
+                        docker exec "$CONTAINER" pg_restore -U postgres --exit-on-error -d "$db" "/in/$db.dump"
+                    done
+                '''
+            }
+        }
+        stage('Check the restored data') {
+            steps {
+                sh '''
+                    set -eu
+                    q() { docker exec "$CONTAINER" psql -U postgres -d "$1" -Atc "$2"; }
+
+                    tables_sql="SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
+                    migration_sql="SELECT version FROM flyway_schema_history WHERE success ORDER BY installed_rank DESC LIMIT 1"
+
+                    {
+                        echo "stamp=$(cat in/LATEST)"
+                        echo "grubstack_tables=$(q grubstack "$tables_sql")"
+                        echo "grubstack_migration=$(q grubstack "$migration_sql")"
+                        echo "grubstack_core_tables=$(q grubstack_core "$tables_sql")"
+                        echo "grubstack_core_migration=$(q grubstack_core "$migration_sql")"
+                        echo "users=$(q grubstack 'SELECT count(*) FROM gs_user')"
+                        echo "tenants=$(q grubstack_core 'SELECT count(*) FROM gs_tenant')"
+                        echo "orders=$(q grubstack_core 'SELECT count(*) FROM gs_order')"
+                    } > results.txt
+                    cat results.txt
+
+                    # A restore that "succeeds" but comes back empty is still a failed backup.
+                    [ "$(q grubstack 'SELECT count(*) FROM gs_user')" -gt 0 ] || { echo "No users restored"; exit 1; }
+                    [ "$(q grubstack_core 'SELECT count(*) FROM gs_tenant')" -gt 0 ] || { echo "No tenants restored"; exit 1; }
+                '''
+            }
+        }
+    }
+    post {
+        success {
+            writeFile file: 'notify_slack.py', text: '''
+import json
+
+r = dict(line.strip().split("=", 1) for line in open("results.txt") if "=" in line)
+text = (
+    f":white_check_mark: *Weekly backup restore test passed* (backup {r['stamp']}): "
+    f"grubstack {r['grubstack_tables']} tables (migration V{r['grubstack_migration']}), "
+    f"grubstack_core {r['grubstack_core_tables']} tables (migration V{r['grubstack_core_migration']}); "
+    f"{r['users']} users, {r['tenants']} tenants, {r['orders']} orders"
+)
+with open("slack_payload.json", "w") as f:
+    json.dump({"text": text}, f)
+'''
+            sh 'python3 notify_slack.py'
+            sh "curl -sf -X POST \"${env.GS_SLACK_WEBHOOK_URL}\" -H 'Content-Type: application/json' -d @slack_payload.json || true"
+        }
+        failure {
+            writeFile file: 'notify_slack_failure.py', text: """
+import json
+
+payload = json.dumps({"text": ":rotating_light: *Weekly backup restore test FAILED* - the newest backup may not be restorable. <${env.BUILD_URL}console|View console log>"})
+with open("slack_payload.json", "w") as f:
+    f.write(payload)
+"""
+            sh 'python3 notify_slack_failure.py'
+            sh "curl -sf -X POST \"${env.GS_SLACK_WEBHOOK_URL}\" -H 'Content-Type: application/json' -d @slack_payload.json || true"
+        }
+        cleanup {
+            sh 'docker rm -f "$CONTAINER" > /dev/null 2>&1 || true'
+            deleteDir()
+        }
+    }
+}
