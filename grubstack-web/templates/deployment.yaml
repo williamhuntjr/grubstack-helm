@@ -36,8 +36,9 @@ spec:
               value: "{{ .Values.customer.accessToken }}"
             - name: SQUARE_APP_ID
               value: "{{ .Values.customer.squareAppId }}"
+            # The storefront's main address: the custom host when one is claimed, else web-<slug>
             - name: SITE_URL
-              value: "https://{{ .Values.customer.host }}"
+              value: "https://{{ .Values.customer.customHost | default .Values.customer.host }}"
             - name: NODE_ENV
               value: "{{ .Values.app.nodeEnv }}"
             - name: REVALIDATE_SECRET

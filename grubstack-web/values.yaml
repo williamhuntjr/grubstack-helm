@@ -8,6 +8,9 @@ service:
   port: 3000
 customer:
   host: web.grubstack.app
+  # Optional custom storefront host (e.g. streetside.grubstack.app). When set it's the storefront's
+  # main address (SITE_URL) and the web-<slug> host redirects to it.
+  customHost: ""
   slug: changeme
   apiUrl: https://api.grubstack.app/v1
   accessToken: abcdefg

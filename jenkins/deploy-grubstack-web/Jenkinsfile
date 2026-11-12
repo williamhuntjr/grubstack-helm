@@ -6,6 +6,7 @@ pipeline {
         string(name: 'API_URL', description: 'Customer API URL')
         string(name: 'ACCESS_TOKEN', description: 'Customer access token')
         string(name: 'SQUARE_APP_ID', description: 'Square application ID')
+        string(name: 'CUSTOM_HOST', defaultValue: '', description: 'Optional custom storefront host, e.g. streetside.grubstack.app (blank = none)')
     }
     stages {
         stage('Deploy') {
@@ -13,6 +14,14 @@ pipeline {
                 expression { params.ACTION == 'deploy' }
             }
             steps {
+                script {
+                    // A custom host must be one label under grubstack.app (the wildcard cert covers exactly
+                    // one level). Checked here in Groovy, before the value is put into any shell script,
+                    // so a crafted value can't break out of the shell quoting. (==~ must match the whole value.)
+                    if (params.CUSTOM_HOST && !(params.CUSTOM_HOST ==~ '[a-z0-9][a-z0-9-]{1,28}[a-z0-9]\\.grubstack\\.app')) {
+                        error("Invalid CUSTOM_HOST: ${params.CUSTOM_HOST}")
+                    }
+                }
                 sh """
                     kubectl create secret generic grubstack-revalidate-${params.SLUG} \\
                         --from-literal=secret=\$(openssl rand -hex 32) \\
@@ -24,6 +33,7 @@ pipeline {
                         --set customer.apiUrl=${params.API_URL} \\
                         --set customer.accessToken=${params.ACCESS_TOKEN} \\
                         --set customer.squareAppId=${params.SQUARE_APP_ID} \\
+                        --set-string customer.customHost=${params.CUSTOM_HOST ?: ''} \\
                         --namespace grubstack \\
                         --create-namespace
                     kubectl rollout restart deployment/grubstack-web-${params.SLUG} -n grubstack
