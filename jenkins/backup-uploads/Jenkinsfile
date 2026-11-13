@@ -1,0 +1,185 @@
+// Nightly backup of the media library uploads (every tenant's menu images and other files) to S3.
+// The uploads live on this same box (the NFS export the core-api pods mount), so the job reads
+// them directly, read-only. Each tenant's folder becomes its own archive, so one restaurant can be
+// downloaded or restored without unpacking everyone's.
+// Setup and restore instructions: grubstack-dev-tools/infrastructure/postgres/BACKUPS.md ("Media uploads")
+//
+// Needs (Jenkins → Manage Jenkins):
+//   Credentials  aws-backup   username = AWS access key ID, password = secret access key
+//                             (its policy must also allow files/*, see the setup doc)
+//   Global env   GS_BACKUP_S3_BUCKET, GS_BACKUP_AWS_REGION, GS_SLACK_WEBHOOK_URL (#ops)
+//                GS_UPLOADS_DIR (optional, default /var/grubstack/uploads)
+//                GS_UPLOADS_HEARTBEAT_URL (optional) — Uptime Kuma Push monitor URL, called after each good backup
+pipeline {
+    agent any
+    triggers {
+        cron('H 3 * * *')
+    }
+    options {
+        disableConcurrentBuilds()
+        timeout(time: 60, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '60'))
+    }
+    environment {
+        PACK_IMAGE = 'alpine:3.20'
+        AWS_IMAGE  = 'amazon/aws-cli:latest'
+        S3_PREFIX  = 'files/nightly'
+    }
+    stages {
+        stage('Pack') {
+            steps {
+                // Runs inside the container. Kept as its own file so shell quoting doesn't have to
+                // survive Groovy as well.
+                writeFile file: 'pack.sh', text: '''#!/bin/sh
+# /src = the uploads folder (read-only), /work = this job's workspace
+set -eu
+cd /src
+mkdir -p /work/out
+: > /work/counts.txt
+
+packed=0
+for dir in */; do
+    [ -d "$dir" ] || continue
+    name=${dir%/}
+    tar -czf "/work/out/$name.tar.gz" -C /src "$name"
+    # Reading the whole archive back proves it's complete and not corrupt (a bad one stops the job:
+    # the listing goes to a file first, since sh has no pipefail)
+    tar -tzf "/work/out/$name.tar.gz" > /tmp/listing
+    files=$(grep -vc '/$' /tmp/listing || true)
+    echo "$name $files" >> /work/counts.txt
+    packed=$((packed + 1))
+done
+
+# Anything sitting directly in the uploads folder rather than in a tenant's folder
+loose=$(find . -maxdepth 1 -type f | wc -l)
+if [ "$loose" -gt 0 ]; then
+    find . -maxdepth 1 -type f | sed 's|^./||' | tar -czf /work/out/_loose-files.tar.gz -T -
+    echo "_loose-files $loose" >> /work/counts.txt
+fi
+
+if [ "$packed" -eq 0 ]; then
+    echo "No tenant folders in the uploads folder. Is GS_UPLOADS_DIR right, and is it mounted?" >&2
+    exit 1
+fi
+du -sk /src | cut -f1 > /work/source_kb.txt
+echo "Packed $packed tenant folder(s)"
+'''
+                sh '''
+                    set -eu
+                    rm -rf out counts.txt source_kb.txt
+                    UPLOADS_DIR="${GS_UPLOADS_DIR:-/var/grubstack/uploads}"
+                    if [ ! -d "$UPLOADS_DIR" ]; then
+                        echo "Uploads folder $UPLOADS_DIR doesn't exist on this machine" >&2
+                        exit 1
+                    fi
+                    date -u +%Y/%m/%d/%H%M%SZ > stamp.txt
+                    date +%s > started.txt
+
+                    # Root inside the container so every tenant's files are readable whoever owns them;
+                    # the uploads are mounted read-only, so nothing there can change. Ownership of the
+                    # archives goes back to the Jenkins user afterwards.
+                    docker run --rm \
+                        -v "$UPLOADS_DIR:/src:ro" -v "$PWD:/work" \
+                        "$PACK_IMAGE" sh -c "sh /work/pack.sh && chown -R $(id -u):$(id -g) /work/out /work/counts.txt /work/source_kb.txt"
+
+                    ls -l out
+                '''
+            }
+        }
+        stage('Upload to S3') {
+            steps {
+                writeFile file: 'write_manifest.py', text: '''
+import json, os
+
+counts = dict(line.split() for line in open("counts.txt") if line.strip())
+archives = {}
+for name in sorted(os.listdir("out")):
+    tenant = name[:-len(".tar.gz")]
+    archives[name] = {"size": os.path.getsize(os.path.join("out", name)), "files": int(counts.get(tenant, 0))}
+manifest = {
+    "stamp": open("stamp.txt").read().strip(),
+    "source_dir": os.environ.get("GS_UPLOADS_DIR") or "/var/grubstack/uploads",
+    "source_kb": int(open("source_kb.txt").read().strip() or 0),
+    "archives": archives,
+}
+with open("out/manifest.json", "w") as f:
+    json.dump(manifest, f, indent=2)
+'''
+                withCredentials([usernamePassword(credentialsId: 'aws-backup', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                    sh '''
+                        set -eu
+                        python3 write_manifest.py
+                        STAMP=$(cat stamp.txt)
+
+                        aws() {
+                            docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+                                -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_DEFAULT_REGION="$GS_BACKUP_AWS_REGION" \
+                                -v "$PWD:/work:ro" -w /work "$AWS_IMAGE" "$@"
+                        }
+
+                        aws s3 cp out/ "s3://$GS_BACKUP_S3_BUCKET/$S3_PREFIX/$STAMP/" --recursive --only-show-errors
+
+                        # Pointer to the newest backup. Written last, so it only ever points at a
+                        # backup whose files all uploaded.
+                        echo "$STAMP" > LATEST
+                        aws s3 cp LATEST "s3://$GS_BACKUP_S3_BUCKET/$S3_PREFIX/LATEST" --only-show-errors
+                    '''
+                }
+            }
+        }
+    }
+    post {
+        success {
+            writeFile file: 'notify_slack.py', text: '''
+import json, os, time
+
+manifest = json.load(open("out/manifest.json"))
+
+def human(size):
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size < 1024:
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+took = int(time.time()) - int(open("started.txt").read())
+archives = manifest["archives"]
+tenants = [name for name in archives if not name.startswith("_")]
+files = sum(a["files"] for a in archives.values())
+size = sum(a["size"] for a in archives.values())
+dest = f"s3://{os.environ['GS_BACKUP_S3_BUCKET']}/{os.environ['S3_PREFIX']}/{manifest['stamp']}/"
+text = (
+    f":frame_with_picture: *Nightly uploads backup OK* in {took}s: {len(tenants)} tenants, "
+    f"{files} files, {human(size)} compressed, saved to `{dest}`"
+)
+if "_loose-files.tar.gz" in archives:
+    text += f"\\n:warning: {archives['_loose-files.tar.gz']['files']} file(s) sit outside any tenant folder (saved in _loose-files.tar.gz)"
+with open("slack_payload.json", "w") as f:
+    json.dump({"text": text}, f)
+'''
+            sh 'python3 notify_slack.py'
+            // A Slack outage shouldn't turn a good backup red.
+            sh "curl -sf -X POST \"${env.GS_SLACK_WEBHOOK_URL}\" -H 'Content-Type: application/json' -d @slack_payload.json || true"
+            script {
+                if (env.GS_UPLOADS_HEARTBEAT_URL?.trim()) {
+                    sh 'curl -fsS -m 10 -o /dev/null "$GS_UPLOADS_HEARTBEAT_URL" || echo "Uptime Kuma heartbeat failed (backup itself succeeded)"'
+                }
+            }
+        }
+        failure {
+            writeFile file: 'notify_slack_failure.py', text: """
+import json
+
+payload = json.dumps({"text": ":rotating_light: *Nightly uploads backup FAILED* - there is no new backup of the media library from tonight. <${env.BUILD_URL}console|View console log>"})
+with open("slack_payload.json", "w") as f:
+    f.write(payload)
+"""
+            sh 'python3 notify_slack_failure.py'
+            sh "curl -sf -X POST \"${env.GS_SLACK_WEBHOOK_URL}\" -H 'Content-Type: application/json' -d @slack_payload.json || true"
+        }
+        cleanup {
+            // The archives hold every tenant's files: never leave them on the Jenkins disk.
+            deleteDir()
+        }
+    }
+}
