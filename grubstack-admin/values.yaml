@@ -1,0 +1,21 @@
+replicaCount: 1
+image:
+  repository: docker.grubstack.app/production/grubstack-admin
+  # Set by the Jenkinsfile to the exact build (<package version>-<build number>)
+  tag: latest
+  pullPolicy: IfNotPresent
+service:
+  port: 3000
+host: admin.grubstack.app
+# Runtime settings (the image has none baked in; see README)
+env:
+  apiUrl: https://api.grubstack.app/v1
+  siteUrl: https://admin.grubstack.app
+  productionUrl: https://grubstack.app
+  stripeDashboardUrl: https://dashboard.stripe.com
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi

@@ -1,0 +1,194 @@
+// The grubstack.app wildcard certificate (grubstack.app + *.grubstack.app): checks it every Monday,
+// and installs a new one everywhere it's served (control-plane nginx and the proxy's HAProxy).
+// Setup and how-to: grubstack-dev-tools/infrastructure/tls/CERTIFICATES.md
+//
+// SOURCE
+//   check        Report how long the certificate in use has left. Under 30 days: renew it if it came
+//                from Let's Encrypt, otherwise warn #ops that the purchased one needs renewing.
+//                Scheduled runs always do this.
+//   provided     Install the certificate + key you copied to /etc/ssl/grubstack-incoming/ on control-plane.
+//   letsencrypt  Get a certificate from Let's Encrypt (DNS check through Route 53) and install it.
+//                The Monday checks then keep it renewed.
+//
+// Needs (one-time, see CERTIFICATES.md):
+//   /usr/local/sbin/install-grubstack-cert + a sudoers rule letting the jenkins user run it
+//   Credentials  aws-route53   username = AWS access key ID, password = secret access key (letsencrypt only)
+//   Global env   GS_SLACK_WEBHOOK_URL (#ops)
+
+// Decided in the Check stage: 'none', 'warn', 'provided' or 'letsencrypt'
+def action = 'none'
+def daysLeft = 0
+def currentExpiry = ''
+def installed = [:]
+
+pipeline {
+    agent any
+    triggers {
+        cron('H 6 * * 1')
+    }
+    parameters {
+        choice(name: 'SOURCE', choices: ['check', 'provided', 'letsencrypt'],
+               description: 'check: report, and renew a Let\'s Encrypt certificate that\'s due. provided: install the files in /etc/ssl/grubstack-incoming/. letsencrypt: get and install a Let\'s Encrypt certificate.')
+        booleanParam(name: 'ALLOW_EARLIER_EXPIRY', defaultValue: false,
+                     description: 'Install even if the new certificate expires before the one in use (e.g. rolling back).')
+    }
+    options {
+        disableConcurrentBuilds()
+        timeout(time: 20, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '60'))
+    }
+    environment {
+        CERTBOT_IMAGE = 'certbot/dns-route53:v2.11.0'
+        // Let's Encrypt account and certificates. Must match LE_LIVE in install-grubstack-cert.
+        LE_DIR        = '/var/lib/jenkins/grubstack-letsencrypt'
+        INSTALLER     = '/usr/local/sbin/install-grubstack-cert'
+        CP_IP         = '107.161.173.73'   // control-plane nginx
+        PROXY_IP      = '107.161.173.97'   // HAProxy ingress
+        // Checked by IP, so the result doesn't depend on DNS. The proxy serves this one certificate
+        // for every host, so any name there works.
+        ENDPOINTS     = '107.161.173.73:grubstack.app 107.161.173.73:www.grubstack.app 107.161.173.73:api.grubstack.app 107.161.173.73:cdn.grubstack.app 107.161.173.97:admin.grubstack.app'
+        RENEW_DAYS    = '30'
+    }
+    stages {
+        stage('Check') {
+            steps {
+                script {
+                    def out = sh(returnStdout: true, script: '''#!/bin/bash
+                        set -euo pipefail
+                        pem=$(echo | openssl s_client -connect "$CP_IP:443" -servername grubstack.app 2>/dev/null | openssl x509)
+                        end=$(printf '%s\\n' "$pem" | openssl x509 -noout -enddate | cut -d= -f2)
+                        days=$(( ($(date -d "$end" +%s) - $(date +%s)) / 86400 ))
+                        if printf '%s\\n' "$pem" | openssl x509 -noout -issuer | grep -qi "let.s encrypt"; then le=yes; else le=no; fi
+                        echo "$days $le $(date -d "$end" +%Y-%m-%d)"
+                    ''').trim().split(' ')
+                    daysLeft = out[0] as int
+                    def isLetsEncrypt = out[1] == 'yes'
+                    currentExpiry = out[2]
+                    echo "In use: ${isLetsEncrypt ? 'Let\'s Encrypt' : 'purchased'} certificate, expires ${currentExpiry} (${daysLeft} days)"
+
+                    if (params.SOURCE == 'check') {
+                        if (daysLeft >= (env.RENEW_DAYS as int)) {
+                            action = 'none'
+                        } else if (isLetsEncrypt) {
+                            action = 'letsencrypt'
+                        } else {
+                            action = 'warn'
+                        }
+                    } else {
+                        action = params.SOURCE
+                    }
+                    echo "Action: ${action}"
+                }
+            }
+        }
+        stage('Get Let\'s Encrypt certificate') {
+            when { expression { action == 'letsencrypt' } }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'aws-route53', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                    // A renewal due on a scheduled run is forced; a manual run reuses a certificate
+                    // that isn't due yet (Let's Encrypt limits duplicate certificates per week).
+                    withEnv(["RENEW_FLAG=${params.SOURCE == 'check' ? '--force-renewal' : '--keep-until-expiring'}"]) {
+                        // Single-quoted: the shell expands the secrets, never Groovy.
+                        sh '''
+                            set -eu
+                            mkdir -p "$LE_DIR"
+                            chmod 700 "$LE_DIR"
+                            # Runs as the jenkins user and keeps its state in LE_DIR, separate from the
+                            # host's certbot (which looks after the williamhuntjr.com sites).
+                            docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+                                -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
+                                -v "$LE_DIR:$LE_DIR" "$CERTBOT_IMAGE" certonly \
+                                --dns-route53 --non-interactive --agree-tos --register-unsafely-without-email \
+                                --config-dir "$LE_DIR/config" --work-dir "$LE_DIR/work" --logs-dir "$LE_DIR/logs" \
+                                --cert-name grubstack.app -d grubstack.app -d '*.grubstack.app' \
+                                $RENEW_FLAG
+                        '''
+                    }
+                }
+            }
+        }
+        stage('Install') {
+            when { expression { action == 'provided' || action == 'letsencrypt' } }
+            steps {
+                withEnv(["ACTION=${action}", "EXTRA=${params.ALLOW_EARLIER_EXPIRY ? '--allow-earlier-expiry' : ''}"]) {
+                    sh '''#!/bin/bash
+                        set -euo pipefail
+                        sudo -n "$INSTALLER" "$ACTION" $EXTRA | tee install.log
+                    '''
+                }
+                script {
+                    for (String line : readFile('install.log').readLines()) {
+                        if (line ==~ /^(FINGERPRINT|NOT_AFTER|ISSUER)=.*/) {
+                            def i = line.indexOf('=')
+                            installed[line.substring(0, i)] = line.substring(i + 1)
+                        }
+                    }
+                }
+            }
+        }
+        stage('Verify') {
+            when { expression { action == 'provided' || action == 'letsencrypt' } }
+            steps {
+                // nginx has it as soon as it reloads; the proxy's ingress controller picks up the new
+                // secret within a minute or so.
+                withEnv(["EXPECTED=${installed.FINGERPRINT}"]) {
+                    sh '''#!/bin/bash
+                        set -uo pipefail
+                        served() {
+                            echo | openssl s_client -connect "$1:443" -servername "$2" 2>/dev/null \
+                                | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2
+                        }
+                        for attempt in $(seq 1 18); do
+                            pending=""
+                            for endpoint in $ENDPOINTS; do
+                                ip=${endpoint%%:*}; host=${endpoint#*:}
+                                [ "$(served "$ip" "$host")" = "$EXPECTED" ] || pending="$pending $host@$ip"
+                            done
+                            if [ -z "$pending" ]; then
+                                echo "Serving the new certificate:$(for e in $ENDPOINTS; do printf ' %s' "${e#*:}"; done)"
+                                exit 0
+                            fi
+                            echo "Still serving the old certificate:$pending (attempt $attempt/18)"
+                            sleep 10
+                        done
+                        echo "ERROR: still serving the old certificate after 3 minutes:$pending"
+                        exit 1
+                    '''
+                }
+            }
+        }
+    }
+    post {
+        success {
+            script {
+                if (action == 'warn') {
+                    slack(":warning: *grubstack.app certificate expires in ${daysLeft} days* (${currentExpiry}). " +
+                          "Install the renewed wildcard (`renew-certificate`, SOURCE=provided) or switch to Let's Encrypt (SOURCE=letsencrypt).")
+                    currentBuild.result = 'UNSTABLE'
+                } else if (action != 'none') {
+                    def from = action == 'letsencrypt' ? "Let's Encrypt" : 'your certificate'
+                    slack(":lock: *grubstack.app certificate renewed* from ${from}. Now expires ${installed.NOT_AFTER}; " +
+                          "verified on control-plane nginx and the proxy.")
+                }
+            }
+        }
+        failure {
+            slack(":rotating_light: *grubstack.app certificate renewal FAILED* (SOURCE=${params.SOURCE}). " +
+                  "The certificate in use expires ${currentExpiry ?: 'on an unknown date'}${currentExpiry ? " (${daysLeft} days)" : ''}. " +
+                  "<${env.BUILD_URL}console|View console log>")
+        }
+        cleanup {
+            deleteDir()
+        }
+    }
+}
+
+def slack(String text) {
+    // Built by Python so quotes in the text can't break the JSON. A Slack outage shouldn't fail the job.
+    withEnv(["SLACK_TEXT=${text}"]) {
+        sh '''
+            python3 -c 'import json, os; print(json.dumps({"text": os.environ["SLACK_TEXT"]}))' > slack_payload.json
+            curl -sf -X POST "$GS_SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' -d @slack_payload.json || true
+        '''
+    }
+}

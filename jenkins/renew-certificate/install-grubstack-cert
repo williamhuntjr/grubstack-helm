@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# Installs the grubstack.app wildcard certificate (grubstack.app + *.grubstack.app) everywhere it's
+# served:
+#   - nginx on this host (control-plane): grubstack.app, www, api, cdn
+#     -> /etc/ssl/grubstack.app.crt and /etc/ssl/grubstack.app.key
+#   - Kubernetes secret default/grubstack-cert, which the HAProxy ingress controller on the proxy
+#     serves for every tenant storefront and admin.grubstack.app
+#
+# The renew-certificate Jenkins job runs it through sudo (Jenkins has no other root access here):
+#   install-grubstack-cert provided      the certificate + key copied to /etc/ssl/grubstack-incoming/
+#   install-grubstack-cert letsencrypt   the certificate the job just got from Let's Encrypt
+# Add --allow-earlier-expiry to install a certificate that expires before the one in use.
+#
+# Nothing changes unless the new certificate passes every check. The old files and secret are backed
+# up to /etc/ssl/grubstack-backups/<time>/ first, and put back if nginx or Kubernetes rejects the
+# new ones.
+#
+# Source: grubstack-helm/jenkins/renew-certificate/install-grubstack-cert
+# Installed (root-owned, so Jenkins can't change what runs as root):
+#   /usr/local/sbin/install-grubstack-cert
+# Copy it again after changing it here.
+set -euo pipefail
+umask 077
+
+CRT=/etc/ssl/grubstack.app.crt
+KEY=/etc/ssl/grubstack.app.key
+INCOMING=/etc/ssl/grubstack-incoming
+# Must match LE_DIR in the Jenkinsfile
+LE_LIVE=/var/lib/jenkins/grubstack-letsencrypt/config/live/grubstack.app
+BACKUPS=/etc/ssl/grubstack-backups
+SECRET_NAMESPACE=default
+SECRET_NAME=grubstack-cert
+REQUIRED_NAMES=("grubstack.app" "*.grubstack.app")
+MIN_DAYS=14
+CA_BUNDLE=${CA_BUNDLE:-/etc/ssl/certs/ca-certificates.crt}
+
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
+usage="usage: $0 provided|letsencrypt [--allow-earlier-expiry]"
+source_name=${1:-}
+allow_earlier=false
+case ${2:-} in
+  '') ;;
+  --allow-earlier-expiry) allow_earlier=true ;;
+  *) die "$usage" ;;
+esac
+case $source_name in
+  provided)
+    new_crt=$INCOMING/grubstack.app.crt
+    new_key=$INCOMING/grubstack.app.key
+    ;;
+  letsencrypt)
+    new_crt=$LE_LIVE/fullchain.pem
+    new_key=$LE_LIVE/privkey.pem
+    ;;
+  *) die "$usage" ;;
+esac
+[[ $EUID -eq 0 ]] || die "must run as root"
+[[ -s $new_crt ]] || die "no certificate at $new_crt"
+[[ -s $new_key ]] || die "no private key at $new_key"
+
+# sudo clears the environment, so point kubectl at root's cluster credentials
+if [[ -z ${KUBECONFIG:-} ]]; then
+  for config in /root/.kube/config /etc/kubernetes/admin.conf; do
+    if [[ -r $config ]]; then
+      export KUBECONFIG=$config
+      break
+    fi
+  done
+fi
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+# Work on copies, so nothing can change the files between checking and installing them
+cp "$new_crt" "$work/crt"
+cp "$new_key" "$work/key"
+
+end_epoch() { date -d "$(openssl x509 -in "$1" -noout -enddate | cut -d= -f2)" +%s; }
+fingerprint() { openssl x509 -in "$1" -noout -fingerprint -sha256 | cut -d= -f2; }
+
+echo "== Checking the new certificate ($new_crt)"
+openssl x509 -in "$work/crt" -noout 2> /dev/null || die "$new_crt is not a PEM certificate"
+# -passin pass: fails straight away on a passphrase-protected key instead of waiting for input
+openssl pkey -in "$work/key" -passin pass: -noout 2> /dev/null ||
+  die "$new_key is not a PEM private key, or it has a passphrase (nginx and HAProxy need it without one)"
+
+cert_pub=$(openssl x509 -in "$work/crt" -noout -pubkey | openssl pkey -pubin -outform DER | sha256sum)
+key_pub=$(openssl pkey -in "$work/key" -passin pass: -pubout -outform DER | sha256sum)
+[[ $cert_pub == "$key_pub" ]] || die "the private key doesn't belong to this certificate"
+echo "   key matches the certificate"
+
+names=$(openssl x509 -in "$work/crt" -noout -ext subjectAltName | tail -n +2 | tr ',' '\n' | sed 's/^ *//')
+for name in "${REQUIRED_NAMES[@]}"; do
+  grep -qxF "DNS:$name" <<< "$names" || die "the certificate doesn't cover $name (it covers: $(paste -sd ' ' <<< "$names"))"
+done
+echo "   covers ${REQUIRED_NAMES[*]}"
+
+openssl x509 -in "$work/crt" -noout -checkend $((MIN_DAYS * 86400)) > /dev/null ||
+  die "the certificate expires within $MIN_DAYS days ($(openssl x509 -in "$work/crt" -noout -enddate | cut -d= -f2))"
+
+# Browsers need the intermediate certificate(s) too: the file must be the server certificate
+# followed by its chain, and together they must lead to a trusted root
+awk '/-----BEGIN CERTIFICATE-----/ { n++ } n == 1' "$work/crt" > "$work/leaf"
+openssl verify -CAfile "$CA_BUNDLE" -untrusted "$work/crt" "$work/leaf" > /dev/null 2>&1 ||
+  die "the chain is incomplete or untrusted: put the intermediate (CA bundle) certificate(s) after the server certificate in the same file"
+echo "   chain is complete and trusted"
+
+new_end=$(end_epoch "$work/crt")
+if [[ -s $CRT ]]; then
+  current_end=$(end_epoch "$CRT")
+  if [[ $(fingerprint "$CRT") == "$(fingerprint "$work/crt")" ]]; then
+    echo "   same certificate as the one installed (installing again anyway, to make sure Kubernetes has it too)"
+  elif ((new_end < current_end)) && ! $allow_earlier; then
+    die "the new certificate expires $(date -ud "@$new_end"), before the current one ($(date -ud "@$current_end")). Run with --allow-earlier-expiry (ALLOW_EARLIER_EXPIRY in Jenkins) if that's intended."
+  fi
+fi
+
+echo "== Backing up the current certificate"
+backup=$BACKUPS/$(date -u +%Y%m%dT%H%M%SZ)
+mkdir -p "$backup"
+chmod 700 "$BACKUPS" "$backup"
+[[ -e $CRT ]] && cp -p "$CRT" "$backup/"
+[[ -e $KEY ]] && cp -p "$KEY" "$backup/"
+had_secret=false
+if kubectl get secret "$SECRET_NAME" -n "$SECRET_NAMESPACE" -o yaml > "$backup/k8s-secret.yaml" 2> /dev/null; then
+  had_secret=true
+else
+  rm -f "$backup/k8s-secret.yaml"
+fi
+echo "   $backup"
+
+# Replace a file atomically, keeping the owner and permissions of the one it replaces
+put() {
+  local src=$1 dest=$2 mode=$3 tmp=$2.new.$$
+  cp "$src" "$tmp"
+  if [[ -e $dest ]]; then
+    chown --reference="$dest" "$tmp"
+    chmod --reference="$dest" "$tmp"
+  else
+    chown root:root "$tmp"
+    chmod "$mode" "$tmp"
+  fi
+  mv -f "$tmp" "$dest"
+}
+
+restore_nginx() {
+  echo "   restoring the previous nginx certificate" >&2
+  [[ -e $backup/grubstack.app.crt ]] && cp -p "$backup/grubstack.app.crt" "$CRT"
+  [[ -e $backup/grubstack.app.key ]] && cp -p "$backup/grubstack.app.key" "$KEY"
+  nginx -t && systemctl reload nginx
+}
+
+echo "== Installing for nginx (grubstack.app, www, api, cdn)"
+put "$work/crt" "$CRT" 644
+put "$work/key" "$KEY" 600
+if ! nginx -t; then
+  restore_nginx || true
+  die "nginx rejected the new certificate; the previous one is back in place"
+fi
+systemctl reload nginx
+echo "   nginx reloaded"
+
+echo "== Updating Kubernetes secret $SECRET_NAMESPACE/$SECRET_NAME (proxy: tenant storefronts, admin)"
+if ! kubectl create secret tls "$SECRET_NAME" -n "$SECRET_NAMESPACE" --cert="$work/crt" --key="$work/key" \
+  --dry-run=client -o yaml | kubectl apply -f -; then
+  restore_nginx || true
+  if $had_secret; then kubectl apply -f "$backup/k8s-secret.yaml" || true; fi
+  die "couldn't update the Kubernetes secret; the previous certificate is back in place"
+fi
+
+if [[ $source_name == provided ]]; then
+  # It's installed and backed up now; don't leave a second copy of the private key lying around
+  rm -f "$new_crt" "$new_key"
+fi
+
+echo "== Installed"
+echo "FINGERPRINT=$(fingerprint "$work/crt")"
+echo "NOT_AFTER=$(date -ud "@$new_end" '+%Y-%m-%d')"
+echo "ISSUER=$(openssl x509 -in "$work/crt" -noout -issuer | sed 's/^issuer=//')"
