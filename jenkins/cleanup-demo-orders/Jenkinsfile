@@ -1,0 +1,85 @@
+// Nightly: deletes every order of GrubStack's demo stores (tenants marked "Demo store" in the admin
+// console, gs_tenant.is_demo), so each visitor finds a clean Orders board and reports. Customer
+// tenants are never touched: prod-api only acts on tenants with is_demo set.
+//
+// DRY_RUN only counts. Scheduled runs use the default (false).
+//
+// Needs (Jenkins → Manage Jenkins), all already set up for other jobs:
+//   Global env   GS_PROD_API_URL, GS_SERVICE_TOKEN, GS_SLACK_WEBHOOK_URL (#ops)
+pipeline {
+    agent any
+    triggers {
+        cron('H 8 * * *')
+    }
+    parameters {
+        booleanParam(
+            name: 'DRY_RUN',
+            defaultValue: false,
+            description: 'Only count the demo stores\' orders; delete nothing.'
+        )
+    }
+    options {
+        disableConcurrentBuilds()
+        timeout(time: 10, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '60'))
+    }
+    stages {
+        stage('Clean up demo orders') {
+            steps {
+                sh '''
+                    set -eu
+                    rm -f result.json
+                    curl -sf -X POST "$GS_PROD_API_URL/tenants/demo-orders/cleanup?dry_run=$DRY_RUN" \
+                        -H "X-Service-Token: $GS_SERVICE_TOKEN" -o result.json
+                    cat result.json
+                '''
+            }
+        }
+    }
+    post {
+        success {
+            // Its own file, so the quoting doesn't have to survive Groovy and the shell too
+            writeFile file: 'notify_slack.py', text: '''
+import json, sys
+
+data = json.load(open("result.json")).get("data") or {}
+tenants = data.get("tenants") or []
+dry = data.get("dry_run")
+failed = [t for t in tenants if t.get("error")]
+if not tenants:
+    text = ":broom: *Demo orders cleanup*: no demo stores are marked in the admin console."
+else:
+    verb = "would delete" if dry else "deleted"
+    head = (":mag: *Demo orders cleanup* (DRY RUN)" if dry else ":broom: *Demo orders cleanup*")
+    if failed:
+        head = ":warning: *Demo orders cleanup* finished with errors"
+    lines = []
+    for t in tenants:
+        if t.get("error"):
+            lines.append(f"  - `{t['slug']}`: FAILED ({t['error']})")
+        else:
+            lines.append(f"  - `{t['slug']}`: {verb} {t['deleted']} order(s)")
+    text = head + "\\n" + "\\n".join(lines)
+with open("slack_payload.json", "w") as f:
+    json.dump({"text": text}, f)
+if failed:
+    sys.exit(1)
+'''
+            sh 'python3 notify_slack.py || echo "Some demo stores failed; see the Slack message"'
+            sh "curl -sf -X POST \"${env.GS_SLACK_WEBHOOK_URL}\" -H 'Content-Type: application/json' -d @slack_payload.json || true"
+        }
+        failure {
+            writeFile file: 'notify_slack_failure.py', text: """
+import json
+text = ":rotating_light: *Demo orders cleanup FAILED*. <${env.BUILD_URL}console|View console log>"
+with open("slack_payload.json", "w") as f:
+    json.dump({"text": text}, f)
+"""
+            sh 'python3 notify_slack_failure.py'
+            sh "curl -sf -X POST \"${env.GS_SLACK_WEBHOOK_URL}\" -H 'Content-Type: application/json' -d @slack_payload.json || true"
+        }
+        cleanup {
+            deleteDir()
+        }
+    }
+}
