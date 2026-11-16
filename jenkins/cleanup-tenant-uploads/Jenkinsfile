@@ -1,0 +1,195 @@
+// Nightly cleanup of media library folders (/var/grubstack/uploads/<tenant_id>) that belong to no
+// tenant any more: tenants deleted from the admin console, and purged tenants (90 days after
+// cancelling), whose menus and items are already gone. Saves the disk space and the S3 space the
+// nightly uploads backup would otherwise keep paying for.
+//
+// Safety:
+//   - Keeps every tenant prod-api lists at /tenants/uploads-keep (in gs_tenant and not purged). If
+//     that call fails or returns no tenants, nothing is deleted.
+//   - Only folders named like a tenant id (a UUID) are touched; anything else is left alone.
+//   - Only deletes once tonight's uploads backup has finished (S3 files/nightly/LATEST is today's),
+//     so every deleted folder is still in S3 for the backup's 30 days.
+//   - Refuses to delete more than MAX_DELETE folders in one run (a bad keep list must never wipe
+//     live tenants' images; see the reconcile-deployments incident).
+// Runs after backup-uploads (H 3, up to an hour). Must run on the box that holds the uploads.
+//
+// Needs (Jenkins → Manage Jenkins), all already set up for other jobs:
+//   Credentials  aws-backup   (reads files/nightly/LATEST)
+//   Global env   GS_PROD_API_URL, GS_SERVICE_TOKEN, GS_BACKUP_S3_BUCKET, GS_BACKUP_AWS_REGION,
+//                GS_SLACK_WEBHOOK_URL (#ops), GS_UPLOADS_DIR (optional, default /var/grubstack/uploads)
+pipeline {
+    agent any
+    triggers {
+        cron('H 6 * * *')
+    }
+    parameters {
+        booleanParam(
+            name: 'DRY_RUN',
+            defaultValue: false,
+            description: 'Only report which folders would be deleted.'
+        )
+        string(
+            name: 'MAX_DELETE',
+            defaultValue: '10',
+            description: 'Refuse to run if more folders than this would be deleted. Raise it for a one-off manual run after checking the dry-run list.'
+        )
+    }
+    options {
+        disableConcurrentBuilds()
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '60'))
+    }
+    environment {
+        WORK_IMAGE = 'alpine:3.20'
+        AWS_IMAGE  = 'amazon/aws-cli:latest'
+        S3_PREFIX  = 'files/nightly'
+    }
+    stages {
+        stage('Tenants to keep') {
+            steps {
+                writeFile file: 'keep.py', text: '''
+import json, sys
+
+body = json.load(open("keep.json"))
+ids = (body.get("data") or {}).get("tenant_ids")
+if body.get("status", {}).get("code") != "success" or not isinstance(ids, list) or not ids:
+    sys.exit("prod-api returned no tenants to keep; refusing to delete anything")
+with open("keep.txt", "w") as f:
+    f.write("\\n".join(i.lower() for i in ids) + "\\n")
+print(f"{len(ids)} tenants to keep")
+'''
+                sh '''
+                    set -eu
+                    rm -f keep.json keep.txt result.txt
+                    curl -sf "$GS_PROD_API_URL/tenants/uploads-keep" -H "X-Service-Token: $GS_SERVICE_TOKEN" -o keep.json
+                    python3 keep.py
+                '''
+            }
+        }
+        stage('Check tonight\'s backup') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'aws-backup', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                    sh '''
+                        set -eu
+                        LATEST=$(docker run --rm -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
+                            -e AWS_DEFAULT_REGION="$GS_BACKUP_AWS_REGION" "$AWS_IMAGE" \
+                            s3 cp "s3://$GS_BACKUP_S3_BUCKET/$S3_PREFIX/LATEST" - | tr -d '[:space:]')
+                        TODAY=$(date -u +%Y/%m/%d)
+                        echo "Newest uploads backup: $LATEST (today is $TODAY)"
+                        case "$LATEST" in
+                            "$TODAY"/*) echo yes > backup_ok.txt ;;
+                            *) echo no > backup_ok.txt ;;
+                        esac
+                    '''
+                }
+            }
+        }
+        stage('Clean up') {
+            steps {
+                // Runs inside the container, as its own file so the shell quoting doesn't also have
+                // to survive Groovy. /src = the uploads folder, /work = this job's workspace.
+                writeFile file: 'clean.sh', text: '''#!/bin/sh
+set -eu
+cd /src
+: > /work/result.txt
+candidates=""
+count=0
+for dir in */; do
+    [ -d "$dir" ] || continue
+    name=${dir%/}
+    # Only tenant folders (UUIDs); anything else isn't ours to judge
+    echo "$name" | grep -Eqi '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || continue
+    lower=$(echo "$name" | tr 'A-F' 'a-f')
+    grep -qx "$lower" /work/keep.txt && continue
+    candidates="$candidates $name"
+    count=$((count + 1))
+done
+
+if [ "$count" -gt "$MAX_DELETE" ]; then
+    echo "REFUSED $count folders would be deleted, more than MAX_DELETE=$MAX_DELETE:$candidates" > /work/result.txt
+    echo "Refusing: $count folders would be deleted (MAX_DELETE=$MAX_DELETE)" >&2
+    exit 1
+fi
+
+for name in $candidates; do
+    kb=$(du -sk "$name" | cut -f1)
+    files=$(find "$name" -type f | wc -l | tr -d ' ')
+    if [ "$MODE" = "delete" ]; then
+        rm -rf -- "/src/$name"
+    fi
+    echo "$name $kb $files" >> /work/result.txt
+done
+echo "$MODE: $count folder(s)"
+'''
+                sh '''
+                    set -eu
+                    UPLOADS_DIR="${GS_UPLOADS_DIR:-/var/grubstack/uploads}"
+                    if [ ! -d "$UPLOADS_DIR" ]; then
+                        echo "Uploads folder $UPLOADS_DIR doesn't exist on this machine" >&2
+                        exit 1
+                    fi
+                    MODE=delete
+                    if [ "$DRY_RUN" = "true" ]; then MODE=report; fi
+                    if [ "$(cat backup_ok.txt)" != "yes" ]; then
+                        echo "Tonight's uploads backup hasn't finished: reporting only, nothing deleted"
+                        MODE=report
+                    fi
+                    echo "$MODE" > mode.txt
+
+                    # Root inside the container, since core-api writes the uploads as root
+                    docker run --rm -e MODE="$MODE" -e MAX_DELETE="$MAX_DELETE" \
+                        -v "$UPLOADS_DIR:/src" -v "$PWD:/work" \
+                        "$WORK_IMAGE" sh -c "sh /work/clean.sh; status=\\$?; chown $(id -u):$(id -g) /work/result.txt; exit \\$status"
+                    cat result.txt
+                '''
+            }
+        }
+    }
+    post {
+        success {
+            writeFile file: 'notify_slack.py', text: '''
+import json
+
+mode = open("mode.txt").read().strip()
+rows = [line.split() for line in open("result.txt") if line.strip()]
+kb = sum(int(r[1]) for r in rows)
+files = sum(int(r[2]) for r in rows)
+size = f"{kb / 1024:.1f} MB" if kb < 1024 * 1024 else f"{kb / 1024 / 1024:.2f} GB"
+if not rows:
+    text = ":broom: *Uploads cleanup*: no folders left over from deleted tenants."
+else:
+    if mode == "delete":
+        head = f":broom: *Uploads cleanup* deleted {len(rows)} folder(s) of deleted tenants: {files} files, {size}"
+    elif open("backup_ok.txt").read().strip() != "yes":
+        head = (f":warning: *Uploads cleanup* deleted nothing: tonight's uploads backup hasn't finished. "
+                f"Would delete {len(rows)} folder(s), {files} files, {size}")
+    else:
+        head = f":mag: *Uploads cleanup* (DRY RUN) would delete {len(rows)} folder(s): {files} files, {size}"
+    text = head + "\\n" + "\\n".join(f"  - `{r[0]}` ({r[2]} files)" for r in rows)
+with open("slack_payload.json", "w") as f:
+    json.dump({"text": text}, f)
+'''
+            sh 'python3 notify_slack.py'
+            sh "curl -sf -X POST \"${env.GS_SLACK_WEBHOOK_URL}\" -H 'Content-Type: application/json' -d @slack_payload.json || true"
+        }
+        failure {
+            writeFile file: 'notify_slack_failure.py', text: """
+import json, os
+
+detail = ""
+if os.path.exists("result.txt"):
+    detail = open("result.txt").read().strip()
+text = ":rotating_light: *Uploads cleanup FAILED*, nothing more was deleted. <${env.BUILD_URL}console|View console log>"
+if detail.startswith("REFUSED"):
+    text += "\\n" + detail[len("REFUSED "):]
+with open("slack_payload.json", "w") as f:
+    json.dump({"text": text}, f)
+"""
+            sh 'python3 notify_slack_failure.py'
+            sh "curl -sf -X POST \"${env.GS_SLACK_WEBHOOK_URL}\" -H 'Content-Type: application/json' -d @slack_payload.json || true"
+        }
+        cleanup {
+            deleteDir()
+        }
+    }
+}
